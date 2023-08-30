@@ -8,16 +8,16 @@ runs:
     - name: Checkout code
       uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
 
-    - name: Read .nvmrc
-      id: read-nvm
+    - name: Install nvm
       shell: bash
       run: |
-        echo "version=$(cat .nvmrc)" >> "$GITHUB_OUTPUT"
-
-    - name: Setup node
-      uses: actions/setup-node@64ed1c7eab4cce3362f8c340dee64e5eaeef8f7c # v3.6.0
-      with:
-        node-version: ${{ steps.read-nvm.outputs.version }}
+        curl -sL https://raw.githubusercontent.com/nvm-sh/nvm/v0.35.0/install.sh -o install_nvm.sh
+        if [[ $(sha1sum install_nvm.sh) != "2b5f64ec70c66ffa04946773673c424136ea75c5  install_nvm.sh" ]]; then
+          echo "sha1sum of install_nvm.sh does not match"
+          exit 1
+        fi
+        . install_nvm.sh
+        export NVM_DIR="$HOME/.nvm"
 
     - name: Install admin JS
       if: github.event.repository.name != 'silverstripe-admin'
@@ -29,7 +29,15 @@ runs:
         git clone https://github.com/silverstripe/silverstripe-admin.git admin
         # Assumption is that the default branch of admin is the correct one to build against
         cd admin
-        # yarn comes preinstalled with actions/setup-node
+        # Need to run this to make nvm available in the current directory
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        if ! [[ -f .nvmrc ]]; then
+          echo "No .nvmrc file found in admin"
+          exit 1
+        fi
+        nvm install $(cat .nvmrc)
+        nvm use $(cat .nvmrc)
+        npm install --global yarn
         yarn install
         cd $DIR
 
@@ -41,6 +49,16 @@ runs:
         if [[ -f yarn.lock ]]; then
           rm yarn.lock
         fi
+        # Run nvm use and install yarn again for edge cases where the module is still on node 10, while admin is on node 18
+        # Need to run this to make nvm available in the current directory
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        if ! [[ -f .nvmrc ]]; then
+          echo "No .nvmrc file found in repository"
+          exit 1
+        fi
+        nvm install $(cat .nvmrc)
+        nvm use $(cat .nvmrc)
+        npm install --global yarn
         yarn install
 
     - name: Read package.json
@@ -71,13 +89,17 @@ runs:
       run: |
         yarn test
 
-    - name: Build JS with webpack
+    - name: Build JS
       # always run this and subsequent steps even if yarn.lint/yarn.test fails so that pull-request is
       # created which will result in a red pull-request build so it's easy to see where things are at
       if: always()
       shell: bash
       run: |
-        NODE_ENV=production node_modules/.bin/webpack --mode production --bail --progress
+        if [[ -f node_modules/.bin/webpack ]]; then
+          NODE_ENV=production node_modules/.bin/webpack --mode production --bail --progress
+        else
+          yarn build
+        fi
 
     - name: Remove any old pull-requests
       if: always()
